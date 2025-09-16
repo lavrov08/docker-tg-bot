@@ -472,18 +472,18 @@ class DockerBot:
             await query.edit_message_text("Нет запущенных контейнеров (удаленно)")
             return
 
-        message = "📊 *Статистика сервера (удаленно):*\n\n"
+        message = "📊 <b>Статистика сервера (удаленно):</b>\n\n"
         for line in lines:
             try:
                 name, cpu, mem = line.split('|', 2)
             except ValueError:
                 continue
-            message += f"🟢 {name}\n"
-            message += f"   CPU: {cpu}\n"
-            message += f"   Память: {mem}\n\n"
+            message += f"🟢 {html.escape(name)}\n"
+            message += f"   CPU: {html.escape(cpu)}\n"
+            message += f"   Память: {html.escape(mem)}\n\n"
 
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="ssh_menu")]]
-        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
     def _load_env_servers(self):
         # Только парольные сервера: SSH_SERVERS_PWD_JSON
