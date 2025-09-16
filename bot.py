@@ -14,7 +14,8 @@ class DockerBot:
         # self.allowed_users = [int(user_id) for user_id in os.getenv('ALLOWED_USERS', '').split(',') if user_id]
         # Настройка Docker клиента для работы с socket
         try:
-            self.docker_client = docker.from_env()
+            # Используем прямой путь к socket
+            self.docker_client = docker.DockerClient(base_url='unix:///var/run/docker.sock')
             # Проверяем подключение к Docker
             self.docker_client.ping()
             print("Docker подключение успешно установлено")
