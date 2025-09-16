@@ -2,6 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Установка системных зависимостей
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Установка Docker CLI
+RUN curl -fsSL https://get.docker.com | sh
+
 # Копирование файлов зависимостей
 COPY requirements.txt .
 
