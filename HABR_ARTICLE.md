@@ -337,6 +337,99 @@ async def get_images(self) -> List[Dict[str, Any]]:
     return images
 ```
 
+## Контейнеризация бота
+
+### 1. Dockerfile
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Установка системных зависимостей
+RUN apt-get update && apt-get install -y \
+    sshpass \
+    openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Копирование файлов зависимостей
+COPY requirements.txt .
+
+# Установка Python зависимостей
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копирование исходного кода
+COPY . .
+
+# Создание пользователя для безопасности
+RUN useradd -m -u 1000 botuser && chown -R botuser:botuser /app
+USER botuser
+
+# Переменные окружения
+ENV PYTHONUNBUFFERED=1
+
+# Команда по умолчанию
+CMD ["python", "bot_with_compose.py"]
+```
+
+### 2. Docker Compose
+
+```yaml
+version: '3.8'
+
+services:
+  telegram-docker-bot:
+    build: .
+    container_name: telegram-docker-bot
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - SERVER_HOST=${SERVER_HOST}
+      - SERVER_USER=${SERVER_USER}
+      - SERVER_PASSWORD=${SERVER_PASSWORD}
+      - ALLOWED_USERS=${ALLOWED_USERS}
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - bot-network
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    container_name: telegram-bot-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - bot-network
+
+volumes:
+  redis_data:
+
+networks:
+  bot-network:
+    driver: bridge
+```
+
+### 3. Запуск в Docker
+
+```bash
+# Клонирование репозитория
+git clone https://github.com/your-username/telegram-docker-bot.git
+cd telegram-docker-bot
+
+# Настройка переменных окружения
+cp env.example .env
+# Отредактируйте .env файл
+
+# Запуск
+docker-compose up -d
+
+# Просмотр логов
+docker-compose logs -f telegram-docker-bot
+```
+
 ## Запуск и тестирование
 
 ### 1. Настройка переменных окружения

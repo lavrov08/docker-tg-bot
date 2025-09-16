@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  telegram-docker-bot:
+    build: .
+    container_name: telegram-docker-bot
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - SERVER_HOST=${SERVER_HOST}
+      - SERVER_USER=${SERVER_USER}
+      - SERVER_PASSWORD=${SERVER_PASSWORD}
+      - ALLOWED_USERS=${ALLOWED_USERS}
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - bot-network
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    container_name: telegram-bot-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - bot-network
+
+volumes:
+  redis_data:
+
+networks:
+  bot-network:
+    driver: bridge
