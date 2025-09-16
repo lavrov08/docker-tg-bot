@@ -142,7 +142,6 @@ class DockerBot:
         await update.message.reply_text(
             "🐳 *Docker Bot*\n\nВыберите действие:",
             reply_markup=reply_markup,
-            parse_mode='Markdown'
         )
     
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -172,7 +171,6 @@ class DockerBot:
         await query.edit_message_text(
             "🐳 *Docker Bot*\n\nВыберите действие:",
             reply_markup=reply_markup,
-            parse_mode='Markdown'
         )
     
     async def show_containers(self, query):
@@ -203,7 +201,7 @@ class DockerBot:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text(message, reply_markup=reply_markup)
     
     async def show_container_info(self, query):
         """Показать информацию о контейнере"""
@@ -229,7 +227,7 @@ class DockerBot:
             keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="list")])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+            await query.edit_message_text(message, reply_markup=reply_markup)
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка при получении информации о контейнере: {e}")
     
@@ -266,7 +264,7 @@ class DockerBot:
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"container_{container_name}")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+            await query.edit_message_text(message, reply_markup=reply_markup)
     
     async def show_stats(self, query):
         """Показать статистику"""
@@ -284,7 +282,7 @@ class DockerBot:
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text(message, reply_markup=reply_markup)
     
     def run(self):
         """Запуск бота"""
