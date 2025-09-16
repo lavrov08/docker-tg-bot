@@ -12,7 +12,15 @@ class DockerBot:
         self.bot_token = os.getenv('BOT_TOKEN')
         # Опционально: ограничить доступ определенным пользователям
         # self.allowed_users = [int(user_id) for user_id in os.getenv('ALLOWED_USERS', '').split(',') if user_id]
-        self.docker_client = docker.from_env()
+        # Настройка Docker клиента для работы с socket
+        try:
+            self.docker_client = docker.from_env()
+            # Проверяем подключение к Docker
+            self.docker_client.ping()
+            print("Docker подключение успешно установлено")
+        except Exception as e:
+            print(f"Ошибка подключения к Docker: {e}")
+            raise
         
     async def get_containers(self):
         """Получить список контейнеров"""
