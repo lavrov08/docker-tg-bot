@@ -237,6 +237,67 @@ def _validate_docker_command(self, command: str) -> bool:
     return any(command.startswith(cmd) for cmd in allowed_commands)
 ```
 
+## Docker Compose поддержка
+
+### 1. Поиск compose файлов
+
+```python
+async def find_compose_files(self) -> List[Dict[str, str]]:
+    """Найти все docker-compose.yml файлы на сервере"""
+    command = "find / -name 'docker-compose.yml' -o -name 'docker-compose.yaml' 2>/dev/null | head -20"
+    result = await self._run_ssh_command(command)
+    
+    compose_files = []
+    for line in result.strip().split('\n'):
+        if line and line.strip():
+            path = line.strip()
+            directory = os.path.dirname(path)
+            compose_files.append({
+                'path': path,
+                'directory': directory,
+                'name': os.path.basename(directory)
+            })
+    
+    return compose_files
+```
+
+### 2. Управление сервисами
+
+```python
+async def get_compose_status(self, compose_dir: str) -> Dict[str, Any]:
+    """Получить статус сервисов в docker-compose"""
+    command = "docker-compose ps --format json"
+    result = await self._run_ssh_command(command, compose_dir)
+    
+    # Парсинг JSON результата...
+    return {
+        'directory': compose_dir,
+        'services': services,
+        'total_services': len(services),
+        'running_services': len([s for s in services if s['state'] == 'running'])
+    }
+```
+
+### 3. Операции с compose
+
+```python
+async def start_compose_services(self, compose_dir: str, services: List[str] = None) -> bool:
+    """Запустить сервисы docker-compose"""
+    if services:
+        command = f"docker-compose up -d {' '.join(services)}"
+    else:
+        command = "docker-compose up -d"
+    
+    await self._run_ssh_command(command, compose_dir)
+    return True
+
+async def scale_compose_service(self, compose_dir: str, service: str, replicas: int) -> bool:
+    """Масштабировать сервис docker-compose"""
+    command = f"docker-compose up -d --scale {service}={replicas}"
+    await self._run_ssh_command(command, compose_dir)
+    return True
+```
+
 ## Расширение функциональности
 
 ### 1. Мониторинг ресурсов
