@@ -10,6 +10,8 @@ load_dotenv()
 class DockerBot:
     def __init__(self):
         self.bot_token = os.getenv('BOT_TOKEN')
+        # Опционально: ограничить доступ определенным пользователям
+        # self.allowed_users = [int(user_id) for user_id in os.getenv('ALLOWED_USERS', '').split(',') if user_id]
         
     async def run_docker_command(self, command):
         """Выполнить Docker команду локально"""
@@ -24,6 +26,12 @@ class DockerBot:
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
+        # Опционально: проверка доступа
+        # user_id = update.effective_user.id
+        # if hasattr(self, 'allowed_users') and self.allowed_users and user_id not in self.allowed_users:
+        #     await update.message.reply_text("❌ У вас нет доступа к этому боту.")
+        #     return
+        
         keyboard = [
             [InlineKeyboardButton("📋 Список контейнеров", callback_data="list")],
             [InlineKeyboardButton("📊 Статистика", callback_data="stats")]
