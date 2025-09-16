@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import html
+from urllib.parse import quote, unquote
 import docker
 import paramiko
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -185,6 +186,20 @@ class DockerBot:
         elif query.data.startswith("ssh_delete_"):
             server_id = query.data.replace("ssh_delete_", "")
             await self.confirm_delete_server(query, server_id)
+        elif query.data.startswith("sshc|"):
+            parts = query.data.split("|")
+            # Formats:
+            # sshc|info|{server_id}|{enc_name}
+            # sshc|action|{server_id}|{start|stop|restart}|{enc_name}
+            # sshc|logs|{server_id}|{enc_name}
+            if len(parts) >= 3:
+                cmd = parts[1]
+                if cmd == 'info' and len(parts) == 4:
+                    await self.show_remote_container_info(query, parts[2], unquote(parts[3]))
+                elif cmd == 'action' and len(parts) == 5:
+                    await self.handle_remote_action(query, parts[2], parts[3], unquote(parts[4]))
+                elif cmd == 'logs' and len(parts) == 4:
+                    await self.show_remote_logs(query, parts[2], unquote(parts[3]))
         elif query.data.startswith("container_"):
             await self.show_container_info(query)
         elif query.data.startswith("action_"):
@@ -440,6 +455,7 @@ class DockerBot:
             return
 
         message = "📋 <b>Список контейнеров (удаленно):</b>\n\n"
+        keyboard = []
         for line in lines:
             try:
                 name, status, image = line.split('|', 2)
@@ -449,11 +465,17 @@ class DockerBot:
             message += f"{status_emoji} <code>{html.escape(name)}</code>\n"
             message += f"   Статус: {html.escape(status)}\n"
             message += f"   Образ: {html.escape(image)}\n\n"
+            enc = quote(name, safe='')
+            # Кнопка подробностей/управления
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"{'⏹️' if status_emoji=='🟢' else '▶️'} {name}",
+                    callback_data=f"sshc|info|{server_id}|{enc}"
+                )
+            ])
 
-        keyboard = [
-            [InlineKeyboardButton("📊 Статистика", callback_data=f"ssh_stats_{server_id}")],
-            [InlineKeyboardButton("🔙 Назад", callback_data="ssh_menu")]
-        ]
+        keyboard.append([InlineKeyboardButton("📊 Статистика", callback_data=f"ssh_stats_{server_id}")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="ssh_menu")])
         await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
     async def show_remote_stats(self, query, server_id: str):
@@ -483,6 +505,73 @@ class DockerBot:
             message += f"   Память: {html.escape(mem)}\n\n"
 
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="ssh_menu")]]
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+
+    async def show_remote_container_info(self, query, server_id: str, container_name: str):
+        user_id = query.from_user.id
+        scope, srv = self._resolve_server_by_id(server_id, user_id)
+        if not srv:
+            await query.edit_message_text("❌ Сервер не найден")
+            return
+
+        # Получим статус, образ
+        info_line = self._ssh_exec(
+            srv['host'], srv['username'], srv['private_key'],
+            f"docker ps -a --filter name=^/{container_name}$ --format '{{{{.Status}}}}|{{{{.Image}}}}'"
+        ).strip()
+        status = "unknown"
+        image = ""
+        if info_line and '|' in info_line:
+            status, image = info_line.split('|', 1)
+
+        message = f"🐳 <b>{html.escape(container_name)}</b>\n\n"
+        message += f"Статус: {html.escape(status)}\n"
+        message += f"Образ: {html.escape(image)}\n\n"
+
+        enc = quote(container_name, safe='')
+        keyboard = []
+        if status.lower().startswith('up'):
+            keyboard.append([InlineKeyboardButton("⏹️ Остановить", callback_data=f"sshc|action|{server_id}|stop|{enc}")])
+            keyboard.append([InlineKeyboardButton("🔄 Перезапустить", callback_data=f"sshc|action|{server_id}|restart|{enc}")])
+        else:
+            keyboard.append([InlineKeyboardButton("▶️ Запустить", callback_data=f"sshc|action|{server_id}|start|{enc}")])
+        keyboard.append([InlineKeyboardButton("📝 Логи", callback_data=f"sshc|logs|{server_id}|{enc}")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"ssh_connect_{server_id}")])
+
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+
+    async def handle_remote_action(self, query, server_id: str, action: str, container_name: str):
+        user_id = query.from_user.id
+        scope, srv = self._resolve_server_by_id(server_id, user_id)
+        if not srv:
+            await query.edit_message_text("❌ Сервер не найден")
+            return
+        cmd = None
+        if action == 'start':
+            cmd = f"docker start {container_name}"
+        elif action == 'stop':
+            cmd = f"docker stop {container_name}"
+        elif action == 'restart':
+            cmd = f"docker restart {container_name}"
+        else:
+            await query.edit_message_text("❌ Неизвестное действие")
+            return
+        out = self._ssh_exec(srv['host'], srv['username'], srv['private_key'], cmd)
+        del out
+        # Обновим карточку контейнера
+        await self.show_remote_container_info(query, server_id, container_name)
+
+    async def show_remote_logs(self, query, server_id: str, container_name: str):
+        user_id = query.from_user.id
+        scope, srv = self._resolve_server_by_id(server_id, user_id)
+        if not srv:
+            await query.edit_message_text("❌ Сервер не найден")
+            return
+        logs = self._ssh_exec(srv['host'], srv['username'], srv['private_key'], f"docker logs --tail 50 {container_name}")
+        if len(logs) > 3000:
+            logs = logs[-3000:]
+        message = f"📝 <b>Логи {html.escape(container_name)} (удаленно):</b>\n\n<pre>{html.escape(logs)}</pre>"
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"sshc|info|{server_id}|{quote(container_name, safe='')}")]]
         await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
     def _load_env_servers(self):
