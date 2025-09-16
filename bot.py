@@ -1,13 +1,15 @@
 import os
 import asyncio
 import io
+import json
+from pathlib import Path
 import docker
 import paramiko
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(dotenv_path=Path(__file__).with_name('.env'))
 
 class DockerBot:
     def __init__(self):
@@ -16,6 +18,9 @@ class DockerBot:
         self.user_states = {}
         # Сохраненные сервера по пользователям
         self.user_servers = {}
+        # Глобальные сервера из ENV (общие для всех пользователей, без права удаления из меню)
+        self.env_servers = self._load_env_servers()
+        print(f"ENV servers loaded: {len(self.env_servers)}")
         # Опционально: ограничить доступ определенным пользователям
         # self.allowed_users = [int(user_id) for user_id in os.getenv('ALLOWED_USERS', '').split(',') if user_id]
         # Настройка Docker клиента для работы с socket
@@ -230,19 +235,29 @@ class DockerBot:
     async def show_ssh_menu(self, query):
         """Меню SSH серверов"""
         user_id = query.from_user.id
-        servers = self.user_servers.get(user_id, [])
+        user_servers = self.user_servers.get(user_id, [])
+        env_servers = self.env_servers
 
         message = "🔐 *Серверы (SSH):*\n\n"
         keyboard = []
 
-        if not servers:
+        if not env_servers and not user_servers:
             message += "Нет сохраненных серверов. Добавьте новый.\n\n"
         else:
-            for idx, srv in enumerate(servers):
-                label = f"{srv['username']}@{srv['host']}"
-                keyboard.append([InlineKeyboardButton(f"📋 {label}", callback_data=f"ssh_connect_{idx}")])
-                keyboard.append([InlineKeyboardButton(f"📊 Статистика: {label}", callback_data=f"ssh_stats_{idx}")])
-                keyboard.append([InlineKeyboardButton(f"🗑️ Удалить: {label}", callback_data=f"ssh_delete_{idx}")])
+            if env_servers:
+                message += "Из окружения:\n"
+                for idx, srv in enumerate(env_servers):
+                    label = f"{srv['username']}@{srv['host']}"
+                    keyboard.append([InlineKeyboardButton(f"📋 {label}", callback_data=f"ssh_connect_env_{idx}")])
+                    keyboard.append([InlineKeyboardButton(f"📊 Статистика: {label}", callback_data=f"ssh_stats_env_{idx}")])
+                message += "\n"
+            if user_servers:
+                message += "Ваши сервера:\n"
+                for idx, srv in enumerate(user_servers):
+                    label = f"{srv['username']}@{srv['host']}"
+                    keyboard.append([InlineKeyboardButton(f"📋 {label}", callback_data=f"ssh_connect_user_{idx}")])
+                    keyboard.append([InlineKeyboardButton(f"📊 Статистика: {label}", callback_data=f"ssh_stats_user_{idx}")])
+                    keyboard.append([InlineKeyboardButton(f"🗑️ Удалить: {label}", callback_data=f"ssh_delete_user_{idx}")])
 
         keyboard.append([InlineKeyboardButton("➕ Добавить сервер", callback_data="ssh_add")])
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
@@ -252,12 +267,9 @@ class DockerBot:
 
     async def confirm_delete_server(self, query, server_id: str):
         user_id = query.from_user.id
-        servers = self.user_servers.get(user_id, [])
-        try:
-            idx = int(server_id)
-            srv = servers[idx]
-        except Exception:
-            await query.edit_message_text("❌ Сервер не найден")
+        scope, srv = self._resolve_server_by_id(server_id, user_id)
+        if scope != 'user' or not srv:
+            await query.edit_message_text("❌ Этот сервер нельзя удалить")
             return
 
         label = f"{srv['username']}@{srv['host']}"
@@ -270,16 +282,15 @@ class DockerBot:
 
     async def delete_server(self, query, server_id: str):
         user_id = query.from_user.id
-        servers = self.user_servers.get(user_id, [])
-        try:
-            idx = int(server_id)
-            removed = servers.pop(idx)
-            # Если список пуст, удаляем ключ
-            if not servers:
-                self.user_servers.pop(user_id, None)
-        except Exception:
-            await query.edit_message_text("❌ Не удалось удалить сервер")
+        scope, srv = self._resolve_server_by_id(server_id, user_id)
+        if scope != 'user' or not srv:
+            await query.edit_message_text("❌ Этот сервер нельзя удалить")
             return
+        servers = self.user_servers.get(user_id, [])
+        idx = int(server_id.split('_', 1)[1])
+        removed = servers.pop(idx)
+        if not servers:
+            self.user_servers.pop(user_id, None)
 
         label = f"{removed['username']}@{removed['host']}"
         await query.edit_message_text(f"✅ Сервер удален: {label}")
@@ -411,11 +422,8 @@ class DockerBot:
 
     async def show_remote_containers(self, query, server_id: str):
         user_id = query.from_user.id
-        servers = self.user_servers.get(user_id, [])
-        try:
-            idx = int(server_id)
-            srv = servers[idx]
-        except Exception:
+        scope, srv = self._resolve_server_by_id(server_id, user_id)
+        if not srv:
             await query.edit_message_text("❌ Сервер не найден")
             return
 
@@ -448,11 +456,8 @@ class DockerBot:
 
     async def show_remote_stats(self, query, server_id: str):
         user_id = query.from_user.id
-        servers = self.user_servers.get(user_id, [])
-        try:
-            idx = int(server_id)
-            srv = servers[idx]
-        except Exception:
+        scope, srv = self._resolve_server_by_id(server_id, user_id)
+        if not srv:
             await query.edit_message_text("❌ Сервер не найден")
             return
 
@@ -477,6 +482,79 @@ class DockerBot:
 
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="ssh_menu")]]
         await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    def _load_env_servers(self):
+        # Только парольные сервера: SSH_SERVERS_PWD_JSON
+        raw_pwd = os.getenv('SSH_SERVERS_PWD_JSON', '')
+        if raw_pwd is None:
+            raw_pwd = ''
+        raw_pwd = raw_pwd.strip()
+        print(f"SSH_SERVERS_PWD_JSON present={bool(raw_pwd)} len={len(raw_pwd) if raw_pwd else 0}")
+        pwd_based = []
+        if raw_pwd:
+            try:
+                data_pwd = json.loads(raw_pwd)
+                print(f"SSH_SERVERS_PWD_JSON parsed, type={type(data_pwd).__name__}")
+                if isinstance(data_pwd, list):
+                    print(f"SSH_SERVERS_PWD_JSON list size={len(data_pwd)}")
+                    for idx, item in enumerate(data_pwd):
+                        if not isinstance(item, dict):
+                            print(f"SSH_SERVERS_PWD_JSON[{idx}] skipped: not a dict")
+                            continue
+                        host = item.get('host')
+                        username = item.get('username')
+                        password = item.get('password')
+                        if not host or not username or not password:
+                            print(f"SSH_SERVERS_PWD_JSON[{idx}] missing required fields")
+                            continue
+                        try:
+                            entry = self._install_key_for_env(host, username, password)
+                            pwd_based.append(entry)
+                        except Exception as e:
+                            print(f"SSH_SERVERS_PWD_JSON[{idx}] install failed: {e}")
+                            continue
+            except Exception as e:
+                print(f"SSH_SERVERS_PWD_JSON json error: {e}")
+
+        return pwd_based
+
+    def _install_key_for_env(self, host: str, username: str, password: str):
+        private_key_str, public_key_str = self._generate_ssh_keypair(comment=f"{username}@dockerbot-env")
+        self._ssh_copy_id(host, username, password, public_key_str)
+        return {
+            'host': host,
+            'username': username,
+            'private_key': private_key_str,
+            'public_key': public_key_str
+        }
+
+    def _resolve_server_by_id(self, server_id: str, user_id: int):
+        # server_id может быть вида: "env_0" или "user_1" или старый int (совместимость)
+        if server_id.isdigit():
+            servers = self.user_servers.get(user_id, [])
+            try:
+                idx = int(server_id)
+                return 'user', servers[idx]
+            except Exception:
+                return None, None
+        if '_' in server_id:
+            scope, idx_str = server_id.split('_', 1)
+            try:
+                idx = int(idx_str)
+            except Exception:
+                return None, None
+            if scope == 'env':
+                try:
+                    return 'env', self.env_servers[idx]
+                except Exception:
+                    return None, None
+            if scope == 'user':
+                servers = self.user_servers.get(user_id, [])
+                try:
+                    return 'user', servers[idx]
+                except Exception:
+                    return None, None
+        return None, None
     
     async def show_container_info(self, query):
         """Показать информацию о контейнере"""
