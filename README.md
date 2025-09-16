@@ -24,19 +24,14 @@
 
 1. Клонируйте репозиторий
 2. Установите зависимости: `pip install -r requirements.txt`
-3. Установите `sshpass`: `sudo apt install sshpass` (Ubuntu/Debian)
-4. Настройте переменные окружения в `.env`
-5. Запустите бота: `python bot.py`
+3. Настройте переменные окружения в `.env`
+4. Запустите бота: `python bot.py`
 
 ## Настройка
 
 Создайте файл `.env`:
 ```
 BOT_TOKEN=your_telegram_bot_token
-SERVER_HOST=your_server_ip
-SERVER_USER=your_username
-SERVER_PASSWORD=your_password
-ALLOWED_USERS=123456789,987654321
 ```
 
 ## Использование

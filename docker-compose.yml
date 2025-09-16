@@ -7,10 +7,8 @@ services:
     restart: unless-stopped
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
-      - SERVER_HOST=${SERVER_HOST}
-      - SERVER_USER=${SERVER_USER}
-      - SERVER_PASSWORD=${SERVER_PASSWORD}
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
       - ./logs:/app/logs
     networks:
       - bot-network

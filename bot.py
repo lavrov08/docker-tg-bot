@@ -10,21 +10,11 @@ load_dotenv()
 class DockerBot:
     def __init__(self):
         self.bot_token = os.getenv('BOT_TOKEN')
-        self.server_host = os.getenv('SERVER_HOST')
-        self.server_user = os.getenv('SERVER_USER')
-        self.server_password = os.getenv('SERVER_PASSWORD')
         
-    async def run_ssh_command(self, command):
-        """Выполнить команду через SSH"""
-        ssh_command = [
-            'sshpass', '-p', self.server_password,
-            'ssh', '-o', 'StrictHostKeyChecking=no',
-            f'{self.server_user}@{self.server_host}',
-            command
-        ]
-        
+    async def run_docker_command(self, command):
+        """Выполнить Docker команду локально"""
         process = await asyncio.create_subprocess_exec(
-            *ssh_command,
+            'docker', *command.split(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -78,7 +68,7 @@ class DockerBot:
     
     async def show_containers(self, query):
         """Показать список контейнеров"""
-        result = await self.run_ssh_command("docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}'")
+        result = await self.run_docker_command("ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}'")
         
         if not result.strip():
             await query.edit_message_text("📋 Контейнеры не найдены")
@@ -115,7 +105,7 @@ class DockerBot:
         container_name = query.data.split("_")[1]
         
         # Получаем статус
-        status_result = await self.run_ssh_command(f"docker ps -a --filter name={container_name} --format '{{.Status}}'")
+        status_result = await self.run_docker_command(f"ps -a --filter name={container_name} --format '{{.Status}}'")
         status = status_result.strip()
         
         message = f"🐳 *{container_name}*\n\n"
@@ -142,16 +132,16 @@ class DockerBot:
         container_name = "_".join(data[2:])
         
         if action == "start":
-            await self.run_ssh_command(f"docker start {container_name}")
+            await self.run_docker_command(f"start {container_name}")
             await query.edit_message_text(f"✅ Контейнер {container_name} запущен")
         elif action == "stop":
-            await self.run_ssh_command(f"docker stop {container_name}")
+            await self.run_docker_command(f"stop {container_name}")
             await query.edit_message_text(f"⏹️ Контейнер {container_name} остановлен")
         elif action == "restart":
-            await self.run_ssh_command(f"docker restart {container_name}")
+            await self.run_docker_command(f"restart {container_name}")
             await query.edit_message_text(f"🔄 Контейнер {container_name} перезапущен")
         elif action == "logs":
-            logs = await self.run_ssh_command(f"docker logs --tail 20 {container_name}")
+            logs = await self.run_docker_command(f"logs --tail 20 {container_name}")
             if len(logs) > 3000:
                 logs = logs[-3000:] + "\n\n... (показаны последние 20 строк)"
             
@@ -163,7 +153,7 @@ class DockerBot:
     
     async def show_stats(self, query):
         """Показать статистику"""
-        result = await self.run_ssh_command("docker stats --no-stream --format '{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}'")
+        result = await self.run_docker_command("stats --no-stream --format '{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}'")
         
         message = "📊 *Статистика сервера:*\n\n"
         
@@ -178,10 +168,10 @@ class DockerBot:
                     message += f"💾 Память: {memory}%\n"
         
         # Подсчет контейнеров
-        containers_result = await self.run_ssh_command("docker ps -a --format '{{.Names}}'")
+        containers_result = await self.run_docker_command("ps -a --format '{{.Names}}'")
         total_containers = len([line for line in containers_result.strip().split('\n') if line.strip()])
         
-        running_result = await self.run_ssh_command("docker ps --format '{{.Names}}'")
+        running_result = await self.run_docker_command("ps --format '{{.Names}}'")
         running_containers = len([line for line in running_result.strip().split('\n') if line.strip()])
         
         message += f"🌐 Контейнеры: {running_containers}/{total_containers}\n"
