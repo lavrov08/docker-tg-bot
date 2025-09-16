@@ -1,42 +1,28 @@
-# Создаем Telegram-бота для управления Docker-контейнерами на VDS
+# Простой Telegram-бот для управления Docker-контейнерами
 
-Привет, Хабр! Сегодня расскажу, как создать Telegram-бота для управления Docker-контейнерами на удаленном сервере. Это будет полезно для DevOps-инженеров, разработчиков и всех, кто хочет автоматизировать рутинные операции с контейнерами.
+Привет, Хабр! Сегодня покажу, как создать простого Telegram-бота для управления Docker-контейнерами на удаленном сервере. Это будет полезно для разработчиков, которые хотят быстро перезапустить сервис или посмотреть логи прямо из Telegram.
 
-## Зачем это нужно?
+## Что мы будем делать
 
-Представьте ситуацию: у вас есть несколько проектов, развернутых в Docker-контейнерах на VDS. Иногда нужно:
-- Перезапустить сервис
-- Посмотреть логи
-- Проверить статус контейнеров
-- Обновить приложение
+Создадим бота, который умеет:
+- Показывать список контейнеров
+- Запускать и останавливать контейнеры
+- Показывать логи
+- Работать через SSH с удаленным сервером
 
-Обычно для этого нужно подключаться по SSH, что не всегда удобно, особенно когда вы не за компьютером. Telegram-бот решает эту проблему — вы можете управлять контейнерами прямо из мессенджера.
+## Подготовка
 
-## Архитектура решения
+### 1. Создание бота
 
-Наше решение состоит из трех компонентов:
-
-1. **Telegram-бот** — интерфейс для пользователя
-2. **Docker Client** — класс для работы с Docker через SSH
-3. **VDS с Docker** — сервер, где развернуты контейнеры
-
-```
-[Пользователь] → [Telegram Bot] → [SSH] → [VDS] → [Docker]
-```
-
-## Настройка окружения
-
-### 1. Создание Telegram-бота
-
-Сначала создадим бота через @BotFather:
-
+Идем к [@BotFather](https://t.me/BotFather) в Telegram:
 1. Отправляем `/newbot`
-2. Указываем имя и username бота
-3. Получаем токен
+2. Придумываем имя: `My Docker Bot`
+3. Придумываем username: `my_docker_bot`
+4. Получаем токен (сохраняем!)
 
 ### 2. Подготовка сервера
 
-На VDS должен быть установлен Docker. Для подключения по SSH установим `sshpass`:
+На сервере должен быть установлен Docker. Для подключения по SSH установим `sshpass`:
 
 ```bash
 # Ubuntu/Debian
@@ -46,36 +32,33 @@ sudo apt install sshpass
 sudo yum install sshpass
 ```
 
-### 3. Установка зависимостей
+## Код бота
 
-```bash
-pip install python-telegram-bot python-dotenv psutil
-```
-
-## Реализация
-
-### Docker Client
-
-Создадим класс для работы с Docker через SSH:
+### Основной файл bot.py
 
 ```python
+import os
 import asyncio
 import subprocess
-import json
-from typing import List, Dict, Any
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from dotenv import load_dotenv
 
-class DockerClient:
+load_dotenv()
+
+class DockerBot:
     def __init__(self):
-        self.host = os.getenv('SERVER_HOST')
-        self.user = os.getenv('SERVER_USER')
-        self.password = os.getenv('SERVER_PASSWORD')
+        self.bot_token = os.getenv('BOT_TOKEN')
+        self.server_host = os.getenv('SERVER_HOST')
+        self.server_user = os.getenv('SERVER_USER')
+        self.server_password = os.getenv('SERVER_PASSWORD')
         
-    async def _run_ssh_command(self, command: str) -> str:
+    async def run_ssh_command(self, command):
         """Выполнить команду через SSH"""
         ssh_command = [
-            'sshpass', '-p', self.password,
+            'sshpass', '-p', self.server_password,
             'ssh', '-o', 'StrictHostKeyChecking=no',
-            f'{self.user}@{self.host}',
+            f'{self.server_user}@{self.server_host}',
             command
         ]
         
@@ -86,431 +69,223 @@ class DockerClient:
         )
         
         stdout, stderr = await process.communicate()
-        
-        if process.returncode != 0:
-            raise Exception(f"SSH команда завершилась с ошибкой: {stderr.decode()}")
-            
-        return stdout.decode()
-```
-
-### Основные методы
-
-```python
-async def get_containers(self) -> List[Dict[str, Any]]:
-    """Получить список контейнеров"""
-    command = "docker ps -a --format '{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Image}}'"
-    result = await self._run_ssh_command(command)
+        return stdout.decode() if process.returncode == 0 else stderr.decode()
     
-    containers = []
-    for line in result.strip().split('\n'):
-        if line:
-            parts = line.split('\t')
-            if len(parts) >= 4:
-                containers.append({
-                    'id': parts[0],
-                    'name': parts[1],
-                    'status': parts[2],
-                    'image': parts[3]
-                })
-    
-    return containers
-
-async def start_container(self, container_id: str) -> bool:
-    """Запустить контейнер"""
-    command = f"docker start {container_id}"
-    await self._run_ssh_command(command)
-    return True
-
-async def stop_container(self, container_id: str) -> bool:
-    """Остановить контейнер"""
-    command = f"docker stop {container_id}"
-    await self._run_ssh_command(command)
-    return True
-```
-
-### Telegram Bot
-
-Основной класс бота:
-
-```python
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-
-class TelegramDockerBot:
-    def __init__(self):
-        self.bot_token = os.getenv('BOT_TOKEN')
-        self.allowed_users = [int(user_id) for user_id in os.getenv('ALLOWED_USERS', '').split(',') if user_id]
-        self.docker_client = DockerClient()
-        
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик команды /start"""
-        user_id = update.effective_user.id
-        
-        if self.allowed_users and user_id not in self.allowed_users:
-            await update.message.reply_text("❌ У вас нет доступа к этому боту.")
-            return
-            
+        """Команда /start"""
         keyboard = [
-            [InlineKeyboardButton("📋 Список контейнеров", callback_data="list_containers")],
-            [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
-            [InlineKeyboardButton("🏷️ Образы", callback_data="list_images")]
+            [InlineKeyboardButton("📋 Список контейнеров", callback_data="list")],
+            [InlineKeyboardButton("📊 Статистика", callback_data="stats")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            "🐳 *Docker Manager Bot*\n\nВыберите действие:",
+            "🐳 *Docker Bot*\n\nВыберите действие:",
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
-```
-
-### Обработка действий с контейнерами
-
-```python
-async def show_containers(self, query):
-    """Показать список контейнеров"""
-    try:
-        containers = await self.docker_client.get_containers()
+    
+    async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка нажатий на кнопки"""
+        query = update.callback_query
+        await query.answer()
         
-        if not containers:
+        if query.data == "list":
+            await self.show_containers(query)
+        elif query.data == "stats":
+            await self.show_stats(query)
+        elif query.data.startswith("container_"):
+            await self.show_container_info(query)
+        elif query.data.startswith("action_"):
+            await self.handle_action(query)
+    
+    async def show_containers(self, query):
+        """Показать список контейнеров"""
+        result = await self.run_ssh_command("docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}'")
+        
+        if not result.strip():
             await query.edit_message_text("📋 Контейнеры не найдены")
             return
-            
+        
         message = "📋 *Список контейнеров:*\n\n"
         keyboard = []
         
-        for container in containers:
-            status_emoji = "🟢" if container['status'] == 'running' else "🔴"
-            message += f"{status_emoji} `{container['name']}`\n"
-            message += f"   Статус: {container['status']}\n"
-            message += f"   Образ: {container['image']}\n\n"
-            
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"{'⏹️' if container['status'] == 'running' else '▶️'} {container['name'][:20]}",
-                    callback_data=f"container_{container['id']}"
-                )
-            ])
+        for line in result.strip().split('\n'):
+            if line:
+                parts = line.split('\t')
+                if len(parts) >= 3:
+                    name, status, image = parts[0], parts[1], parts[2]
+                    status_emoji = "🟢" if "Up" in status else "🔴"
+                    
+                    message += f"{status_emoji} `{name}`\n"
+                    message += f"   Статус: {status}\n"
+                    message += f"   Образ: {image}\n\n"
+                    
+                    keyboard.append([
+                        InlineKeyboardButton(
+                            f"{'⏹️' if 'Up' in status else '▶️'} {name}",
+                            callback_data=f"container_{name}"
+                        )
+                    ])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    async def show_container_info(self, query):
+        """Показать информацию о контейнере"""
+        container_name = query.data.split("_")[1]
+        
+        # Получаем статус
+        status_result = await self.run_ssh_command(f"docker ps -a --filter name={container_name} --format '{{.Status}}'")
+        status = status_result.strip()
+        
+        message = f"🐳 *{container_name}*\n\n"
+        message += f"Статус: {status}\n\n"
+        
+        keyboard = []
+        
+        if "Up" in status:
+            keyboard.append([InlineKeyboardButton("⏹️ Остановить", callback_data=f"action_stop_{container_name}")])
+            keyboard.append([InlineKeyboardButton("🔄 Перезапустить", callback_data=f"action_restart_{container_name}")])
+        else:
+            keyboard.append([InlineKeyboardButton("▶️ Запустить", callback_data=f"action_start_{container_name}")])
+        
+        keyboard.append([InlineKeyboardButton("📝 Логи", callback_data=f"action_logs_{container_name}")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="list")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    async def handle_action(self, query):
+        """Обработка действий с контейнерами"""
+        data = query.data.split("_")
+        action = data[1]
+        container_name = "_".join(data[2:])
         
-    except Exception as e:
-        logger.error(f"Ошибка при получении контейнеров: {e}")
-        await query.edit_message_text("❌ Ошибка при получении списка контейнеров")
-```
-
-## Безопасность
-
-### 1. Ограничение доступа
-
-```python
-# В .env файле
-ALLOWED_USERS=123456789,987654321
-
-# В коде
-if self.allowed_users and user_id not in self.allowed_users:
-    await update.message.reply_text("❌ У вас нет доступа к этому боту.")
-    return
-```
-
-### 2. Использование SSH-ключей
-
-Вместо пароля лучше использовать SSH-ключи:
-
-```python
-async def _run_ssh_command(self, command: str) -> str:
-    ssh_command = [
-        'ssh', '-i', '/path/to/private/key',
-        f'{self.user}@{self.host}',
-        command
-    ]
-    # ...
-```
-
-### 3. Валидация команд
-
-```python
-def _validate_docker_command(self, command: str) -> bool:
-    """Проверить, что команда безопасна"""
-    allowed_commands = ['docker ps', 'docker start', 'docker stop', 'docker restart', 'docker logs']
-    return any(command.startswith(cmd) for cmd in allowed_commands)
-```
-
-## Docker Compose поддержка
-
-### 1. Поиск compose файлов
-
-```python
-async def find_compose_files(self) -> List[Dict[str, str]]:
-    """Найти все docker-compose.yml файлы на сервере"""
-    command = "find / -name 'docker-compose.yml' -o -name 'docker-compose.yaml' 2>/dev/null | head -20"
-    result = await self._run_ssh_command(command)
+        if action == "start":
+            await self.run_ssh_command(f"docker start {container_name}")
+            await query.edit_message_text(f"✅ Контейнер {container_name} запущен")
+        elif action == "stop":
+            await self.run_ssh_command(f"docker stop {container_name}")
+            await query.edit_message_text(f"⏹️ Контейнер {container_name} остановлен")
+        elif action == "restart":
+            await self.run_ssh_command(f"docker restart {container_name}")
+            await query.edit_message_text(f"🔄 Контейнер {container_name} перезапущен")
+        elif action == "logs":
+            logs = await self.run_ssh_command(f"docker logs --tail 20 {container_name}")
+            if len(logs) > 3000:
+                logs = logs[-3000:] + "\n\n... (показаны последние 20 строк)"
+            
+            message = f"📝 *Логи {container_name}:*\n\n```\n{logs}\n```"
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"container_{container_name}")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
     
-    compose_files = []
-    for line in result.strip().split('\n'):
-        if line and line.strip():
-            path = line.strip()
-            directory = os.path.dirname(path)
-            compose_files.append({
-                'path': path,
-                'directory': directory,
-                'name': os.path.basename(directory)
-            })
+    async def show_stats(self, query):
+        """Показать статистику"""
+        result = await self.run_ssh_command("docker stats --no-stream --format '{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}'")
+        
+        message = "📊 *Статистика сервера:*\n\n"
+        
+        if result.strip():
+            lines = result.strip().split('\n')
+            if lines and lines[0]:
+                parts = lines[0].split('\t')
+                if len(parts) >= 3:
+                    cpu = parts[0].replace('%', '')
+                    memory = parts[2].replace('%', '')
+                    message += f"🖥️ CPU: {cpu}%\n"
+                    message += f"💾 Память: {memory}%\n"
+        
+        # Подсчет контейнеров
+        containers_result = await self.run_ssh_command("docker ps -a --format '{{.Names}}'")
+        total_containers = len([line for line in containers_result.strip().split('\n') if line.strip()])
+        
+        running_result = await self.run_ssh_command("docker ps --format '{{.Names}}'")
+        running_containers = len([line for line in running_result.strip().split('\n') if line.strip()])
+        
+        message += f"🌐 Контейнеры: {running_containers}/{total_containers}\n"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
     
-    return compose_files
+    def run(self):
+        """Запуск бота"""
+        application = Application.builder().token(self.bot_token).build()
+        
+        application.add_handler(CommandHandler("start", self.start))
+        application.add_handler(CallbackQueryHandler(self.button_handler))
+        
+        print("Бот запущен...")
+        application.run_polling()
+
+if __name__ == "__main__":
+    bot = DockerBot()
+    bot.run()
 ```
 
-### 2. Управление сервисами
+### Файл requirements.txt
 
-```python
-async def get_compose_status(self, compose_dir: str) -> Dict[str, Any]:
-    """Получить статус сервисов в docker-compose"""
-    command = "docker-compose ps --format json"
-    result = await self._run_ssh_command(command, compose_dir)
-    
-    # Парсинг JSON результата...
-    return {
-        'directory': compose_dir,
-        'services': services,
-        'total_services': len(services),
-        'running_services': len([s for s in services if s['state'] == 'running'])
-    }
+```
+python-telegram-bot==20.7
+python-dotenv==1.0.0
 ```
 
-### 3. Операции с compose
-
-```python
-async def start_compose_services(self, compose_dir: str, services: List[str] = None) -> bool:
-    """Запустить сервисы docker-compose"""
-    if services:
-        command = f"docker-compose up -d {' '.join(services)}"
-    else:
-        command = "docker-compose up -d"
-    
-    await self._run_ssh_command(command, compose_dir)
-    return True
-
-async def scale_compose_service(self, compose_dir: str, service: str, replicas: int) -> bool:
-    """Масштабировать сервис docker-compose"""
-    command = f"docker-compose up -d --scale {service}={replicas}"
-    await self._run_ssh_command(command, compose_dir)
-    return True
-```
-
-## Расширение функциональности
-
-### 1. Мониторинг ресурсов
-
-```python
-async def get_stats(self) -> Dict[str, Any]:
-    """Получить статистику сервера"""
-    command = "docker stats --no-stream --format '{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}'"
-    result = await self._run_ssh_command(command)
-    
-    # Парсинг результата...
-    return {
-        'cpu_percent': cpu_percent,
-        'memory_percent': memory_percent,
-        'containers': f"{running_containers}/{total_containers}"
-    }
-```
-
-### 2. Просмотр логов
-
-```python
-async def get_container_logs(self, container_id: str, lines: int = 50) -> str:
-    """Получить логи контейнера"""
-    command = f"docker logs --tail {lines} {container_id}"
-    return await self._run_ssh_command(command)
-```
-
-### 3. Управление образами
-
-```python
-async def get_images(self) -> List[Dict[str, Any]]:
-    """Получить список образов"""
-    command = "docker images --format '{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}'"
-    result = await self._run_ssh_command(command)
-    
-    # Парсинг результата...
-    return images
-```
-
-## Контейнеризация бота
-
-### 1. Dockerfile
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# Установка системных зависимостей
-RUN apt-get update && apt-get install -y \
-    sshpass \
-    openssh-client \
-    && rm -rf /var/lib/apt/lists/*
-
-# Копирование файлов зависимостей
-COPY requirements.txt .
-
-# Установка Python зависимостей
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Копирование исходного кода
-COPY . .
-
-# Создание пользователя для безопасности
-RUN useradd -m -u 1000 botuser && chown -R botuser:botuser /app
-USER botuser
-
-# Переменные окружения
-ENV PYTHONUNBUFFERED=1
-
-# Команда по умолчанию
-CMD ["python", "bot_with_compose.py"]
-```
-
-### 2. Docker Compose
-
-```yaml
-version: '3.8'
-
-services:
-  telegram-docker-bot:
-    build: .
-    container_name: telegram-docker-bot
-    restart: unless-stopped
-    environment:
-      - BOT_TOKEN=${BOT_TOKEN}
-      - SERVER_HOST=${SERVER_HOST}
-      - SERVER_USER=${SERVER_USER}
-      - SERVER_PASSWORD=${SERVER_PASSWORD}
-      - ALLOWED_USERS=${ALLOWED_USERS}
-    volumes:
-      - ./logs:/app/logs
-    networks:
-      - bot-network
-    depends_on:
-      - redis
-
-  redis:
-    image: redis:7-alpine
-    container_name: telegram-bot-redis
-    restart: unless-stopped
-    volumes:
-      - redis_data:/data
-    networks:
-      - bot-network
-
-volumes:
-  redis_data:
-
-networks:
-  bot-network:
-    driver: bridge
-```
-
-### 3. Запуск в Docker
-
-```bash
-# Клонирование репозитория
-git clone https://github.com/your-username/telegram-docker-bot.git
-cd telegram-docker-bot
-
-# Настройка переменных окружения
-cp env.example .env
-# Отредактируйте .env файл
-
-# Запуск
-docker-compose up -d
-
-# Просмотр логов
-docker-compose logs -f telegram-docker-bot
-```
-
-## Запуск и тестирование
-
-### 1. Настройка переменных окружения
-
-Создайте файл `.env`:
+### Файл .env
 
 ```env
-BOT_TOKEN=your_telegram_bot_token
+BOT_TOKEN=your_telegram_bot_token_here
 SERVER_HOST=your_server_ip
 SERVER_USER=your_username
 SERVER_PASSWORD=your_password
-ALLOWED_USERS=123456789,987654321
 ```
 
-### 2. Запуск бота
+## Запуск
 
+1. Установите зависимости:
+```bash
+pip install python-telegram-bot python-dotenv
+```
+
+2. Установите sshpass:
+```bash
+sudo apt install sshpass  # Ubuntu/Debian
+```
+
+3. Настройте .env файл
+
+4. Запустите бота:
 ```bash
 python bot.py
 ```
 
-### 3. Тестирование
+## Как это работает
 
-1. Отправьте `/start` боту
-2. Проверьте список контейнеров
-3. Попробуйте запустить/остановить контейнер
-4. Посмотрите логи
+1. **SSH подключение** - бот подключается к серверу через SSH
+2. **Выполнение команд** - выполняет Docker команды на удаленном сервере
+3. **Обработка результатов** - парсит вывод и показывает в Telegram
+4. **Интерактивные кнопки** - удобный интерфейс для управления
 
-## Потенциальные улучшения
+## Безопасность
 
-### 1. Webhook вместо polling
-
-```python
-# Для production лучше использовать webhook
-application.run_webhook(
-    listen="0.0.0.0",
-    port=8443,
-    webhook_url="https://yourdomain.com/webhook"
-)
-```
-
-### 2. База данных для логирования
-
-```python
-import sqlite3
-
-class DatabaseLogger:
-    def __init__(self):
-        self.conn = sqlite3.connect('bot_logs.db')
-        self._create_tables()
-    
-    def log_action(self, user_id: int, action: str, container_id: str):
-        # Логирование действий пользователя
-        pass
-```
-
-### 3. Уведомления о событиях
-
-```python
-async def monitor_containers(self):
-    """Мониторинг контейнеров в фоне"""
-    while True:
-        containers = await self.docker_client.get_containers()
-        # Проверка изменений статуса
-        # Отправка уведомлений
-        await asyncio.sleep(60)
-```
+- Используйте SSH-ключи вместо паролей
+- Ограничьте доступ к боту через список разрешенных пользователей
+- Не храните пароли в открытом виде
 
 ## Заключение
 
-Мы создали полнофункционального Telegram-бота для управления Docker-контейнерами. Основные преимущества:
-
-- ✅ Удобный интерфейс через Telegram
-- ✅ Безопасность через ограничение доступа
-- ✅ Асинхронная работа
-- ✅ Расширяемость
-
-Код доступен в репозитории и готов к использованию. Вы можете адаптировать его под свои нужды, добавив новые функции или изменив интерфейс.
+Мы создали простого, но функционального бота для управления Docker-контейнерами. Код понятный и легко расширяемый. Вы можете добавить новые функции, например:
+- Управление Docker Compose
+- Мониторинг в реальном времени
+- Уведомления о событиях
 
 **Полезные ссылки:**
 - [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot)
 - [Docker CLI Reference](https://docs.docker.com/engine/reference/commandline/cli/)
-- [SSH Key Authentication](https://www.ssh.com/academy/ssh/key)
 
 Удачи в автоматизации! 🚀

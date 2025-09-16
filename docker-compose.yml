@@ -10,25 +10,10 @@ services:
       - SERVER_HOST=${SERVER_HOST}
       - SERVER_USER=${SERVER_USER}
       - SERVER_PASSWORD=${SERVER_PASSWORD}
-      - ALLOWED_USERS=${ALLOWED_USERS}
     volumes:
       - ./logs:/app/logs
     networks:
       - bot-network
-    depends_on:
-      - redis
-
-  redis:
-    image: redis:7-alpine
-    container_name: telegram-bot-redis
-    restart: unless-stopped
-    volumes:
-      - redis_data:/data
-    networks:
-      - bot-network
-
-volumes:
-  redis_data:
 
 networks:
   bot-network:

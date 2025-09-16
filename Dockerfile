@@ -17,12 +17,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Копирование исходного кода
 COPY . .
 
-# Создание пользователя для безопасности
-RUN useradd -m -u 1000 botuser && chown -R botuser:botuser /app
-USER botuser
-
 # Переменные окружения
 ENV PYTHONUNBUFFERED=1
 
 # Команда по умолчанию
-CMD ["python", "bot_with_compose.py"]
+CMD ["python", "bot.py"]
