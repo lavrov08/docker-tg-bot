@@ -3,10 +3,12 @@ import asyncio
 import io
 import json
 from pathlib import Path
+import html
 import docker
 import paramiko
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from telegram.constants import ParseMode
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters, Defaults
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path(__file__).with_name('.env'))
@@ -210,15 +212,15 @@ class DockerBot:
             await query.edit_message_text("📋 Контейнеры не найдены")
             return
         
-        message = "📋 *Список контейнеров:*\n\n"
+        message = "📋 <b>Список контейнеров:</b>\n\n"
         keyboard = []
         
         for container in containers:
             status_emoji = "🟢" if container['status'] == 'running' else "🔴"
             
-            message += f"{status_emoji} `{container['name']}`\n"
-            message += f"   Статус: {container['status']}\n"
-            message += f"   Образ: {container['image']}\n\n"
+            message += f"{status_emoji} <code>{html.escape(container['name'])}</code>\n"
+            message += f"   Статус: {html.escape(container['status'])}\n"
+            message += f"   Образ: {html.escape(container['image'])}\n\n"
             
             keyboard.append([
                 InlineKeyboardButton(
@@ -230,7 +232,7 @@ class DockerBot:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(message, reply_markup=reply_markup)
+        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
 
     async def show_ssh_menu(self, query):
         """Меню SSH серверов"""
@@ -437,22 +439,22 @@ class DockerBot:
             await query.edit_message_text("📋 Контейнеры не найдены (удаленно)")
             return
 
-        message = "📋 *Список контейнеров (удаленно):*\n\n"
+        message = "📋 <b>Список контейнеров (удаленно):</b>\n\n"
         for line in lines:
             try:
                 name, status, image = line.split('|', 2)
             except ValueError:
                 continue
             status_emoji = "🟢" if status.lower().startswith('up') else "🔴"
-            message += f"{status_emoji} `{name}`\n"
-            message += f"   Статус: {status}\n"
-            message += f"   Образ: {image}\n\n"
+            message += f"{status_emoji} <code>{html.escape(name)}</code>\n"
+            message += f"   Статус: {html.escape(status)}\n"
+            message += f"   Образ: {html.escape(image)}\n\n"
 
         keyboard = [
             [InlineKeyboardButton("📊 Статистика", callback_data=f"ssh_stats_{server_id}")],
             [InlineKeyboardButton("🔙 Назад", callback_data="ssh_menu")]
         ]
-        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
     async def show_remote_stats(self, query, server_id: str):
         user_id = query.from_user.id
@@ -564,9 +566,9 @@ class DockerBot:
             container = self.docker_client.containers.get(container_name)
             status = container.status
             
-            message = f"🐳 *{container_name}*\n\n"
-            message += f"Статус: {status}\n"
-            message += f"Образ: {container.image.tags[0] if container.image.tags else container.image.short_id}\n\n"
+            message = f"🐳 <b>{html.escape(container_name)}</b>\n\n"
+            message += f"Статус: {html.escape(status)}\n"
+            message += f"Образ: {html.escape(container.image.tags[0] if container.image.tags else container.image.short_id)}\n\n"
             
             keyboard = []
             
@@ -580,7 +582,7 @@ class DockerBot:
             keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="list")])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(message, reply_markup=reply_markup)
+            await query.edit_message_text(message, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка при получении информации о контейнере: {e}")
     
@@ -612,12 +614,12 @@ class DockerBot:
             logs = await self.get_container_logs(container_name, 20)
             if len(logs) > 3000:
                 logs = logs[-3000:] + "\n\n... (показаны последние 20 строк)"
-            
-            message = f"📝 *Логи {container_name}:*\n\n```\n{logs}\n```"
+
+            message = f"📝 <b>Логи {html.escape(container_name)}:</b>\n\n<pre>{html.escape(logs)}</pre>"
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"container_{container_name}")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            await query.edit_message_text(message, reply_markup=reply_markup)
+            await query.edit_message_text(message, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
     
     async def show_stats(self, query):
         """Показать статистику"""
@@ -639,7 +641,8 @@ class DockerBot:
     
     def run(self):
         """Запуск бота"""
-        application = Application.builder().token(self.bot_token).build()
+        defaults = Defaults(parse_mode=ParseMode.MARKDOWN)
+        application = Application.builder().token(self.bot_token).defaults(defaults).build()
         
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CallbackQueryHandler(self.button_handler))
