@@ -15,7 +15,6 @@ class DockerBot:
         # Настройка Docker клиента для работы с socket
         try:
             # Проверяем доступность socket
-            import os
             if not os.path.exists('/var/run/docker.sock'):
                 raise Exception("Docker socket не найден: /var/run/docker.sock")
             
