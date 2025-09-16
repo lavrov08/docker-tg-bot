@@ -14,6 +14,11 @@ class DockerBot:
         # self.allowed_users = [int(user_id) for user_id in os.getenv('ALLOWED_USERS', '').split(',') if user_id]
         # Настройка Docker клиента для работы с socket
         try:
+            # Проверяем доступность socket
+            import os
+            if not os.path.exists('/var/run/docker.sock'):
+                raise Exception("Docker socket не найден: /var/run/docker.sock")
+            
             # Используем прямой путь к socket
             self.docker_client = docker.DockerClient(base_url='unix:///var/run/docker.sock')
             # Проверяем подключение к Docker
@@ -21,6 +26,7 @@ class DockerBot:
             print("Docker подключение успешно установлено")
         except Exception as e:
             print(f"Ошибка подключения к Docker: {e}")
+            print("Убедитесь, что Docker socket смонтирован в контейнер")
             raise
         
     async def get_containers(self):
