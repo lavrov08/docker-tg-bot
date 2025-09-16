@@ -1,8 +1,10 @@
 import os
 import asyncio
+import io
 import docker
+import paramiko
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -10,6 +12,10 @@ load_dotenv()
 class DockerBot:
     def __init__(self):
         self.bot_token = os.getenv('BOT_TOKEN')
+        # Состояние пользователей для пошагового ввода SSH данных
+        self.user_states = {}
+        # Сохраненные сервера по пользователям
+        self.user_servers = {}
         # Опционально: ограничить доступ определенным пользователям
         # self.allowed_users = [int(user_id) for user_id in os.getenv('ALLOWED_USERS', '').split(',') if user_id]
         # Настройка Docker клиента для работы с socket
@@ -135,7 +141,8 @@ class DockerBot:
         
         keyboard = [
             [InlineKeyboardButton("📋 Список контейнеров", callback_data="list")],
-            [InlineKeyboardButton("📊 Статистика", callback_data="stats")]
+            [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
+            [InlineKeyboardButton("🔐 Серверы (remote)", callback_data="ssh_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -155,6 +162,22 @@ class DockerBot:
             await self.show_stats(query)
         elif query.data == "back":
             await self.start_menu(query)
+        elif query.data == "ssh_menu":
+            await self.show_ssh_menu(query)
+        elif query.data == "ssh_add":
+            await self.start_add_ssh_server(query)
+        elif query.data.startswith("ssh_connect_"):
+            server_id = query.data.replace("ssh_connect_", "")
+            await self.show_remote_containers(query, server_id)
+        elif query.data.startswith("ssh_stats_"):
+            server_id = query.data.replace("ssh_stats_", "")
+            await self.show_remote_stats(query, server_id)
+        elif query.data.startswith("ssh_delete_confirm_"):
+            server_id = query.data.replace("ssh_delete_confirm_", "")
+            await self.delete_server(query, server_id)
+        elif query.data.startswith("ssh_delete_"):
+            server_id = query.data.replace("ssh_delete_", "")
+            await self.confirm_delete_server(query, server_id)
         elif query.data.startswith("container_"):
             await self.show_container_info(query)
         elif query.data.startswith("action_"):
@@ -164,7 +187,8 @@ class DockerBot:
         """Показать главное меню"""
         keyboard = [
             [InlineKeyboardButton("📋 Список контейнеров", callback_data="list")],
-            [InlineKeyboardButton("📊 Статистика", callback_data="stats")]
+            [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
+            [InlineKeyboardButton("🔐 Серверы (SSH)", callback_data="ssh_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -202,6 +226,257 @@ class DockerBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(message, reply_markup=reply_markup)
+
+    async def show_ssh_menu(self, query):
+        """Меню SSH серверов"""
+        user_id = query.from_user.id
+        servers = self.user_servers.get(user_id, [])
+
+        message = "🔐 *Серверы (SSH):*\n\n"
+        keyboard = []
+
+        if not servers:
+            message += "Нет сохраненных серверов. Добавьте новый.\n\n"
+        else:
+            for idx, srv in enumerate(servers):
+                label = f"{srv['username']}@{srv['host']}"
+                keyboard.append([InlineKeyboardButton(f"📋 {label}", callback_data=f"ssh_connect_{idx}")])
+                keyboard.append([InlineKeyboardButton(f"📊 Статистика: {label}", callback_data=f"ssh_stats_{idx}")])
+                keyboard.append([InlineKeyboardButton(f"🗑️ Удалить: {label}", callback_data=f"ssh_delete_{idx}")])
+
+        keyboard.append([InlineKeyboardButton("➕ Добавить сервер", callback_data="ssh_add")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(message, reply_markup=reply_markup)
+
+    async def confirm_delete_server(self, query, server_id: str):
+        user_id = query.from_user.id
+        servers = self.user_servers.get(user_id, [])
+        try:
+            idx = int(server_id)
+            srv = servers[idx]
+        except Exception:
+            await query.edit_message_text("❌ Сервер не найден")
+            return
+
+        label = f"{srv['username']}@{srv['host']}"
+        message = f"Удалить сервер {label}?"
+        keyboard = [
+            [InlineKeyboardButton("✅ Да, удалить", callback_data=f"ssh_delete_confirm_{server_id}")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="ssh_menu")]
+        ]
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def delete_server(self, query, server_id: str):
+        user_id = query.from_user.id
+        servers = self.user_servers.get(user_id, [])
+        try:
+            idx = int(server_id)
+            removed = servers.pop(idx)
+            # Если список пуст, удаляем ключ
+            if not servers:
+                self.user_servers.pop(user_id, None)
+        except Exception:
+            await query.edit_message_text("❌ Не удалось удалить сервер")
+            return
+
+        label = f"{removed['username']}@{removed['host']}"
+        await query.edit_message_text(f"✅ Сервер удален: {label}")
+        # Показать обновленное меню
+        await self.show_ssh_menu(query)
+
+    async def start_add_ssh_server(self, query):
+        """Запустить мастер добавления SSH сервера и установки ключа"""
+        user_id = query.from_user.id
+        self.user_states[user_id] = {
+            'flow': 'add_server',
+            'step': 'host',
+            'temp': {}
+        }
+        await query.edit_message_text("Введите host (ip/домен) сервера:")
+
+    async def text_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка текстового ввода для сценариев SSH"""
+        user_id = update.effective_user.id
+        state = self.user_states.get(user_id)
+        if not state:
+            return
+
+        if state.get('flow') == 'add_server':
+            if state.get('step') == 'host':
+                state['temp']['host'] = update.message.text.strip()
+                state['step'] = 'username'
+                await update.message.reply_text("Введите имя пользователя (например, root):")
+                return
+            if state.get('step') == 'username':
+                state['temp']['username'] = update.message.text.strip()
+                state['step'] = 'password'
+                await update.message.reply_text("Введите пароль пользователя (это разово, для установки ключа):")
+                return
+            if state.get('step') == 'password':
+                # Берём пароль и удаляем сообщение пользователя из чата
+                state['temp']['password'] = update.message.text.strip()
+                try:
+                    await update.message.delete()
+                except Exception:
+                    # Могут быть ограничения на удаление — просто игнорируем
+                    pass
+                host = state['temp']['host']
+                username = state['temp']['username']
+                password = state['temp']['password']
+
+                await update.message.reply_text("Пробую установить ключ и сохранить сервер...")
+                try:
+                    server_entry = await self._install_key_and_save_server(user_id, host, username, password)
+                except Exception as e:
+                    self.user_states.pop(user_id, None)
+                    await update.message.reply_text(f"❌ Не удалось установить ключ: {e}")
+                    return
+
+                self.user_states.pop(user_id, None)
+                label = f"{server_entry['username']}@{server_entry['host']}"
+                await update.message.reply_text(f"✅ Готово. Сервер сохранен: {label}")
+                # Показать меню SSH
+                keyboard = [
+                    [InlineKeyboardButton("📋 Открыть список серверов", callback_data="ssh_menu")]
+                ]
+                await update.message.reply_text("Что дальше?", reply_markup=InlineKeyboardMarkup(keyboard))
+                return
+
+    async def _install_key_and_save_server(self, user_id: int, host: str, username: str, password: str):
+        """Сгенерировать ключ, установить на сервер через пароль, сохранить запись"""
+        private_key_str, public_key_str = self._generate_ssh_keypair(comment=f"{username}@dockerbot")
+
+        # Установим ключ на сервер, используя пароль
+        self._ssh_copy_id(host, username, password, public_key_str)
+
+        # Сохраняем сервер
+        server_entry = {
+            'host': host,
+            'username': username,
+            'private_key': private_key_str,
+            'public_key': public_key_str
+        }
+        self.user_servers.setdefault(user_id, []).append(server_entry)
+        return server_entry
+
+    def _generate_ssh_keypair(self, comment: str = "dockerbot"):
+        key = paramiko.RSAKey.generate(2048)
+        private_io = io.StringIO()
+        key.write_private_key(private_io)
+        private_key_str = private_io.getvalue()
+        public_key_str = f"{key.get_name()} {key.get_base64()} {comment}"
+        return private_key_str, public_key_str
+
+    def _ssh_copy_id(self, host: str, username: str, password: str, public_key: str):
+        """Аналог ssh-copy-id: добавить ключ в authorized_keys"""
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(hostname=host, username=username, password=password, timeout=20)
+        try:
+            commands = [
+                "mkdir -p ~/.ssh",
+                "chmod 700 ~/.ssh",
+                "touch ~/.ssh/authorized_keys",
+                "chmod 600 ~/.ssh/authorized_keys",
+                # Добавляем ключ, если его еще нет
+                f"grep -qxF '{public_key}' ~/.ssh/authorized_keys || echo '{public_key}' >> ~/.ssh/authorized_keys"
+            ]
+            for cmd in commands:
+                self._ssh_exec_client(ssh, cmd)
+        finally:
+            ssh.close()
+
+    def _build_pkey(self, private_key_str: str):
+        return paramiko.RSAKey.from_private_key(io.StringIO(private_key_str))
+
+    def _ssh_exec(self, host: str, username: str, private_key_str: str, command: str, timeout: int = 20):
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        pkey = self._build_pkey(private_key_str)
+        ssh.connect(hostname=host, username=username, pkey=pkey, timeout=timeout)
+        try:
+            return self._ssh_exec_client(ssh, command, timeout)
+        finally:
+            ssh.close()
+
+    def _ssh_exec_client(self, ssh: paramiko.SSHClient, command: str, timeout: int = 20):
+        stdin, stdout, stderr = ssh.exec_command(command, timeout=timeout)
+        out = stdout.read().decode('utf-8', errors='ignore').strip()
+        err = stderr.read().decode('utf-8', errors='ignore').strip()
+        if err and not out:
+            return err
+        return out
+
+    async def show_remote_containers(self, query, server_id: str):
+        user_id = query.from_user.id
+        servers = self.user_servers.get(user_id, [])
+        try:
+            idx = int(server_id)
+            srv = servers[idx]
+        except Exception:
+            await query.edit_message_text("❌ Сервер не найден")
+            return
+
+        output = self._ssh_exec(
+            srv['host'], srv['username'], srv['private_key'],
+            "docker ps -a --format '{{.Names}}|{{.Status}}|{{.Image}}'"
+        )
+
+        lines = [l for l in output.split('\n') if l.strip()]
+        if not lines:
+            await query.edit_message_text("📋 Контейнеры не найдены (удаленно)")
+            return
+
+        message = "📋 *Список контейнеров (удаленно):*\n\n"
+        for line in lines:
+            try:
+                name, status, image = line.split('|', 2)
+            except ValueError:
+                continue
+            status_emoji = "🟢" if status.lower().startswith('up') else "🔴"
+            message += f"{status_emoji} `{name}`\n"
+            message += f"   Статус: {status}\n"
+            message += f"   Образ: {image}\n\n"
+
+        keyboard = [
+            [InlineKeyboardButton("📊 Статистика", callback_data=f"ssh_stats_{server_id}")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="ssh_menu")]
+        ]
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def show_remote_stats(self, query, server_id: str):
+        user_id = query.from_user.id
+        servers = self.user_servers.get(user_id, [])
+        try:
+            idx = int(server_id)
+            srv = servers[idx]
+        except Exception:
+            await query.edit_message_text("❌ Сервер не найден")
+            return
+
+        output = self._ssh_exec(
+            srv['host'], srv['username'], srv['private_key'],
+            "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemPerc}}'"
+        )
+        lines = [l for l in output.split('\n') if l.strip()]
+        if not lines:
+            await query.edit_message_text("Нет запущенных контейнеров (удаленно)")
+            return
+
+        message = "📊 *Статистика сервера (удаленно):*\n\n"
+        for line in lines:
+            try:
+                name, cpu, mem = line.split('|', 2)
+            except ValueError:
+                continue
+            message += f"🟢 {name}\n"
+            message += f"   CPU: {cpu}\n"
+            message += f"   Память: {mem}\n\n"
+
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="ssh_menu")]]
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
     
     async def show_container_info(self, query):
         """Показать информацию о контейнере"""
@@ -290,6 +565,7 @@ class DockerBot:
         
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CallbackQueryHandler(self.button_handler))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_handler))
         
         print("Бот запущен...")
         application.run_polling()
