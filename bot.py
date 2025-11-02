@@ -10,6 +10,7 @@ import paramiko
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters, Defaults
+from telegram.error import BadRequest
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path(__file__).with_name('.env'))
@@ -72,7 +73,9 @@ class DockerBot:
                 cpu_percent = self._calculate_cpu_percent(stats)
                 memory_percent = self._calculate_memory_percent(stats)
                 
-                stats_text += f"🟢 {container.name}\n"
+                # Экранируем имя контейнера для безопасного использования в HTML
+                container_name = html.escape(container.name)
+                stats_text += f"🟢 <code>{container_name}</code>\n"
                 stats_text += f"   CPU: {cpu_percent:.1f}%\n"
                 stats_text += f"   Память: {memory_percent:.1f}%\n\n"
             
@@ -146,6 +149,30 @@ class DockerBot:
             return False
         return True
     
+    async def _safe_edit_message_text(self, query, *args, **kwargs):
+        """Безопасное редактирование сообщения с обработкой истёкших queries"""
+        try:
+            await query.edit_message_text(*args, **kwargs)
+        except BadRequest as e:
+            if "Query is too old" in str(e) or "query id is invalid" in str(e):
+                print(f"Query истёк при редактировании сообщения: {e}")
+                return False
+            elif "Can't parse entities" in str(e):
+                print(f"Ошибка парсинга entities: {e}")
+                # Попробуем отправить без форматирования, если было указано
+                if 'parse_mode' in kwargs:
+                    kwargs.pop('parse_mode')
+                    try:
+                        await query.edit_message_text(*args, **kwargs)
+                    except BadRequest:
+                        print(f"Не удалось отправить сообщение без форматирования: {e}")
+                        return False
+                else:
+                    raise
+            else:
+                raise
+        return True
+    
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
         # Проверка доступа
@@ -169,12 +196,25 @@ class DockerBot:
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка нажатий на кнопки"""
         query = update.callback_query
-        await query.answer()
+        
+        # Обработка ответа на callback query с обработкой истёкших queries
+        try:
+            await query.answer()
+        except BadRequest as e:
+            # Игнорируем ошибки истёкших queries, но логируем для отладки
+            if "Query is too old" in str(e) or "query id is invalid" in str(e):
+                print(f"Игнорируем истёкший query: {e}")
+                return
+            raise
         
         # Проверка доступа
         user_id = query.from_user.id
         if not self._check_access(user_id):
-            await query.edit_message_text("❌ У вас нет доступа к этому боту.")
+            try:
+                await query.edit_message_text("❌ У вас нет доступа к этому боту.")
+            except BadRequest:
+                # Query истёк, игнорируем
+                pass
             return
         
         if query.data == "list":
@@ -454,7 +494,7 @@ class DockerBot:
         user_id = query.from_user.id
         scope, srv = self._resolve_server_by_id(server_id, user_id)
         if not srv:
-            await query.edit_message_text("❌ Сервер не найден")
+            await self._safe_edit_message_text(query, "❌ Сервер не найден")
             return
 
         output = self._ssh_exec(
@@ -464,7 +504,7 @@ class DockerBot:
 
         lines = [l for l in output.split('\n') if l.strip()]
         if not lines:
-            await query.edit_message_text("📋 Контейнеры не найдены (удаленно)")
+            await self._safe_edit_message_text(query, "📋 Контейнеры не найдены (удаленно)")
             return
 
         message = "📋 <b>Список контейнеров (удаленно):</b>\n\n"
@@ -489,13 +529,13 @@ class DockerBot:
 
         keyboard.append([InlineKeyboardButton("📊 Статистика", callback_data=f"ssh_stats_{server_id}")])
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="ssh_menu")])
-        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+        await self._safe_edit_message_text(query, message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
     async def show_remote_stats(self, query, server_id: str):
         user_id = query.from_user.id
         scope, srv = self._resolve_server_by_id(server_id, user_id)
         if not srv:
-            await query.edit_message_text("❌ Сервер не найден")
+            await self._safe_edit_message_text(query, "❌ Сервер не найден")
             return
 
         output = self._ssh_exec(
@@ -504,7 +544,7 @@ class DockerBot:
         )
         lines = [l for l in output.split('\n') if l.strip()]
         if not lines:
-            await query.edit_message_text("Нет запущенных контейнеров (удаленно)")
+            await self._safe_edit_message_text(query, "Нет запущенных контейнеров (удаленно)")
             return
 
         message = "📊 <b>Статистика сервера (удаленно):</b>\n\n"
@@ -513,18 +553,18 @@ class DockerBot:
                 name, cpu, mem = line.split('|', 2)
             except ValueError:
                 continue
-            message += f"🟢 {html.escape(name)}\n"
+            message += f"🟢 <code>{html.escape(name)}</code>\n"
             message += f"   CPU: {html.escape(cpu)}\n"
             message += f"   Память: {html.escape(mem)}\n\n"
 
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="ssh_menu")]]
-        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+        await self._safe_edit_message_text(query, message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
     async def show_remote_container_info(self, query, server_id: str, container_name: str):
         user_id = query.from_user.id
         scope, srv = self._resolve_server_by_id(server_id, user_id)
         if not srv:
-            await query.edit_message_text("❌ Сервер не найден")
+            await self._safe_edit_message_text(query, "❌ Сервер не найден")
             return
 
         # Получим статус, образ
@@ -551,13 +591,13 @@ class DockerBot:
         keyboard.append([InlineKeyboardButton("📝 Логи", callback_data=f"sshc|logs|{server_id}|{enc}")])
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"ssh_connect_{server_id}")])
 
-        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+        await self._safe_edit_message_text(query, message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
     async def handle_remote_action(self, query, server_id: str, action: str, container_name: str):
         user_id = query.from_user.id
         scope, srv = self._resolve_server_by_id(server_id, user_id)
         if not srv:
-            await query.edit_message_text("❌ Сервер не найден")
+            await self._safe_edit_message_text(query, "❌ Сервер не найден")
             return
         cmd = None
         if action == 'start':
@@ -567,7 +607,7 @@ class DockerBot:
         elif action == 'restart':
             cmd = f"docker restart {container_name}"
         else:
-            await query.edit_message_text("❌ Неизвестное действие")
+            await self._safe_edit_message_text(query, "❌ Неизвестное действие")
             return
         out = self._ssh_exec(srv['host'], srv['username'], srv['private_key'], cmd)
         del out
@@ -578,14 +618,14 @@ class DockerBot:
         user_id = query.from_user.id
         scope, srv = self._resolve_server_by_id(server_id, user_id)
         if not srv:
-            await query.edit_message_text("❌ Сервер не найден")
+            await self._safe_edit_message_text(query, "❌ Сервер не найден")
             return
         logs = self._ssh_exec(srv['host'], srv['username'], srv['private_key'], f"docker logs --tail 50 {container_name}")
         if len(logs) > 3000:
             logs = logs[-3000:]
         message = f"📝 <b>Логи {html.escape(container_name)} (удаленно):</b>\n\n<pre>{html.escape(logs)}</pre>"
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"sshc|info|{server_id}|{quote(container_name, safe='')}")]]
-        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+        await self._safe_edit_message_text(query, message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
     def _load_env_servers(self):
         # Только парольные сервера: SSH_SERVERS_PWD_JSON
@@ -732,14 +772,15 @@ class DockerBot:
         total_containers = len(containers)
         running_containers = len([c for c in containers if c['status'] == 'running'])
         
-        message = "📊 *Статистика сервера:*\n\n"
+        # Используем HTML вместо Markdown для более надёжного форматирования
+        message = "📊 <b>Статистика сервера:</b>\n\n"
         message += f"🌐 Контейнеры: {running_containers}/{total_containers}\n\n"
         message += stats_text
         
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(message, reply_markup=reply_markup)
+        await self._safe_edit_message_text(query, message, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
     
     def run(self):
         """Запуск бота"""
