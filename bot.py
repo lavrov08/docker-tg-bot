@@ -637,6 +637,7 @@ class DockerBot:
         pwd_based = []
         if raw_pwd:
             try:
+                # Пытаемся распарсить JSON как есть
                 data_pwd = json.loads(raw_pwd)
                 print(f"SSH_SERVERS_PWD_JSON parsed, type={type(data_pwd).__name__}")
                 if isinstance(data_pwd, list):
@@ -657,8 +658,21 @@ class DockerBot:
                         except Exception as e:
                             print(f"SSH_SERVERS_PWD_JSON[{idx}] install failed: {e}")
                             continue
-            except Exception as e:
+            except json.JSONDecodeError as e:
+                # Детальная обработка ошибок парсинга JSON
                 print(f"SSH_SERVERS_PWD_JSON json error: {e}")
+                print(f"SSH_SERVERS_PWD_JSON error at line {e.lineno}, column {e.colno}")
+                if raw_pwd:
+                    # Показываем фрагмент вокруг ошибки для диагностики
+                    start = max(0, e.pos - 30)
+                    end = min(len(raw_pwd), e.pos + 30)
+                    snippet = raw_pwd[start:end]
+                    print(f"SSH_SERVERS_PWD_JSON snippet around error: ...{snippet}...")
+                    print(f"SSH_SERVERS_PWD_JSON full value (first 200 chars): {raw_pwd[:200]}")
+                print("Проверьте, что JSON использует двойные кавычки, например:")
+                print('SSH_SERVERS_PWD_JSON=\'[{"host":"srv.local","username":"root","password":"secret"}]\'')
+            except Exception as e:
+                print(f"SSH_SERVERS_PWD_JSON unexpected error: {e}")
 
         return pwd_based
 
