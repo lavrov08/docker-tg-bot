@@ -11,7 +11,8 @@ class DockerBot:
     def __init__(self):
         self.bot_token = os.getenv('BOT_TOKEN')
         # Опционально: ограничить доступ определенным пользователям
-        # self.allowed_users = [int(user_id) for user_id in os.getenv('ALLOWED_USERS', '').split(',') if user_id]
+        allowed_users_str = os.getenv('ALLOWED_USERS', '')
+        self.allowed_users = [int(user_id) for user_id in allowed_users_str.split(',') if user_id.strip()] if allowed_users_str else []
         # Настройка Docker клиента для работы с socket
         try:
             # Проверяем доступность socket
@@ -125,13 +126,19 @@ class DockerBot:
             print(f"Ошибка при получении логов: {e}")
             return f"Ошибка при получении логов: {e}"
     
+    def _check_access(self, user_id):
+        """Проверить доступ пользователя"""
+        if self.allowed_users and user_id not in self.allowed_users:
+            return False
+        return True
+    
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
-        # Опционально: проверка доступа
-        # user_id = update.effective_user.id
-        # if hasattr(self, 'allowed_users') and self.allowed_users and user_id not in self.allowed_users:
-        #     await update.message.reply_text("❌ У вас нет доступа к этому боту.")
-        #     return
+        # Проверка доступа
+        user_id = update.effective_user.id
+        if not self._check_access(user_id):
+            await update.message.reply_text("❌ У вас нет доступа к этому боту.")
+            return
         
         keyboard = [
             [InlineKeyboardButton("📋 Список контейнеров", callback_data="list")],
@@ -148,6 +155,12 @@ class DockerBot:
         """Обработка нажатий на кнопки"""
         query = update.callback_query
         await query.answer()
+        
+        # Проверка доступа
+        user_id = query.from_user.id
+        if not self._check_access(user_id):
+            await query.edit_message_text("❌ У вас нет доступа к этому боту.")
+            return
         
         if query.data == "list":
             await self.show_containers(query)
